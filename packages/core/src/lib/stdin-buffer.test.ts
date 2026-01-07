@@ -732,105 +732,30 @@ describe("StdinBuffer", () => {
     })
   })
 
-  describe("Kitty Keyboard Protocol Emoji Reassembly", () => {
+  describe("Kitty Keyboard Protocol Sequences", () => {
     const kitty = (codepoint: number) => `\x1b[${codepoint}u`
 
-    it("should convert basic emoji from Kitty sequence to UTF-8", () => {
-      processInput(kitty(0x1f600))
-      flushBuffer()
-      expect(emittedSequences).toEqual(["😀"])
+    it("should preserve Kitty sequences as-is for downstream parsing", () => {
+      processInput(kitty(97))
+      expect(emittedSequences).toEqual([kitty(97)])
     })
 
-    it("should reassemble ZWJ family emoji from separate Kitty sequences", () => {
+    it("should preserve Kitty emoji sequences as-is", () => {
+      processInput(kitty(0x1f600))
+      expect(emittedSequences).toEqual([kitty(0x1f600)])
+    })
+
+    it("should handle mixed Kitty and regular escape sequences", () => {
+      processInput(kitty(0x1f600))
+      processInput("\x1b[A")
+      expect(emittedSequences).toEqual([kitty(0x1f600), "\x1b[A"])
+    })
+
+    it("should handle multiple Kitty sequences", () => {
       processInput(kitty(0x1f468))
       processInput(kitty(0x200d))
       processInput(kitty(0x1f469))
-      processInput(kitty(0x200d))
-      processInput(kitty(0x1f467))
-      flushBuffer()
-      expect(emittedSequences).toEqual(["👨‍👩‍👧"])
-    })
-
-    it("should reassemble flag emoji from Regional Indicators via Kitty", () => {
-      processInput(kitty(0x1f1fa))
-      processInput(kitty(0x1f1f8))
-      flushBuffer()
-      expect(emittedSequences).toEqual(["🇺🇸"])
-    })
-
-    it("should reassemble skin tone emoji via Kitty", () => {
-      processInput(kitty(0x1f44b))
-      processInput(kitty(0x1f3fb))
-      flushBuffer()
-      expect(emittedSequences).toEqual(["👋🏻"])
-    })
-
-    it("should reassemble emoji with variation selector via Kitty", () => {
-      processInput(kitty(0x2764))
-      processInput(kitty(0xfe0f))
-      flushBuffer()
-      expect(emittedSequences).toEqual(["❤️"])
-    })
-
-    it("should convert non-emoji Kitty sequences to UTF-8", () => {
-      processInput(kitty(97))
-      expect(emittedSequences).toEqual(["a"])
-    })
-
-    it("should handle mixed Kitty emoji and regular escape sequences", () => {
-      processInput(kitty(0x1f600))
-      flushBuffer()
-      processInput("\x1b[A")
-      expect(emittedSequences).toEqual(["😀", "\x1b[A"])
-    })
-
-    it("should flush buffered Kitty codepoints when non-Kitty sequence arrives", () => {
-      processInput(kitty(0x1f44b))
-      processInput("\x1b[A")
-      expect(emittedSequences).toEqual(["👋", "\x1b[A"])
-    })
-
-    it("should convert Kitty CJK characters to UTF-8", () => {
-      processInput(kitty(0x4e2d))
-      expect(emittedSequences).toEqual(["中"])
-    })
-
-    it("should emit multiple separate emoji as separate sequences", () => {
-      processInput(kitty(0x1f600))
-      flushBuffer()
-      emittedSequences.length = 0
-      processInput(kitty(0x1f44d))
-      flushBuffer()
-      expect(emittedSequences).toEqual(["👍"])
-    })
-
-    it("should reassemble keycap emoji via Kitty", () => {
-      processInput(kitty(0x23))
-      processInput(kitty(0xfe0f))
-      processInput(kitty(0x20e3))
-      flushBuffer()
-      expect(emittedSequences).toEqual(["#️⃣"])
-    })
-
-    it("should reassemble subdivision flag via Kitty", () => {
-      processInput(kitty(0x1f3f4))
-      processInput(kitty(0xe0067))
-      processInput(kitty(0xe0062))
-      processInput(kitty(0xe0065))
-      processInput(kitty(0xe006e))
-      processInput(kitty(0xe0067))
-      processInput(kitty(0xe007f))
-      flushBuffer()
-      expect(emittedSequences).toEqual(["🏴󠁧󠁢󠁥󠁮󠁧󠁿"])
-    })
-
-    it("should split 4 regional indicators into 2 flags", () => {
-      processInput(kitty(0x1f1fa))
-      processInput(kitty(0x1f1f8))
-      processInput(kitty(0x1f1ef))
-      processInput(kitty(0x1f1f5))
-      flushBuffer()
-      expect(emittedSequences).toEqual(["🇺🇸", "🇯🇵"])
+      expect(emittedSequences).toEqual([kitty(0x1f468), kitty(0x200d), kitty(0x1f469)])
     })
   })
 

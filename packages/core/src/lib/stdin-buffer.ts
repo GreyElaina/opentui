@@ -15,43 +15,11 @@
  */
 
 import { EventEmitter } from "events"
-import { firstGrapheme, getGraphemeSegmenter } from "./grapheme-segmenter"
+import { firstGrapheme } from "./grapheme-segmenter"
 
 const ESC = "\x1b"
 const BRACKETED_PASTE_START = "\x1b[200~"
 const BRACKETED_PASTE_END = "\x1b[201~"
-
-const KITTY_UNICODE_RE = /^\x1b\[(\d+)(?::\d+)*(?:;\d+(?::\d+)*)*u$/
-
-function isGraphemeExtender(codepoint: number): boolean {
-  return (
-    codepoint === 0x200d || // ZWJ
-    (codepoint >= 0xfe00 && codepoint <= 0xfe0f) || // Variation Selectors
-    (codepoint >= 0x1f3fb && codepoint <= 0x1f3ff) || // Skin Tone Modifiers
-    (codepoint >= 0x1f1e6 && codepoint <= 0x1f1ff) || // Regional Indicators
-    codepoint === 0x20e3 || // Combining Enclosing Keycap
-    (codepoint >= 0xe0020 && codepoint <= 0xe007f) // Tag characters
-  )
-}
-
-function canStartGraphemeCluster(codepoint: number): boolean {
-  return (
-    (codepoint >= 0x1f1e6 && codepoint <= 0x1f1ff) || // Regional Indicators
-    (codepoint >= 0x1f300 && codepoint <= 0x1faff) || // Emoji ranges (simplified)
-    codepoint === 0x1f3f4 || // Black Flag
-    codepoint === 0x23 || // # for keycap
-    codepoint === 0x2a || // * for keycap
-    (codepoint >= 0x30 && codepoint <= 0x39) || // 0-9 for keycaps
-    (codepoint >= 0x2600 && codepoint <= 0x27bf) // Misc Symbols & Dingbats
-  )
-}
-
-function extractKittyCodepoint(sequence: string): number | null {
-  const match = KITTY_UNICODE_RE.exec(sequence)
-  if (!match) return null
-  const cp = parseInt(match[1]!, 10)
-  return cp >= 0 && cp <= 0x10ffff ? cp : null
-}
 
 /**
  * Check if a string is a complete escape sequence or needs more data
@@ -202,6 +170,7 @@ function extractCompleteSequences(buffer: string): { sequences: string[]; remain
       }
     } else {
       // Not an escape sequence - take a single grapheme cluster
+      // This correctly handles emoji, CJK characters, and other multi-byte sequences
       const grapheme = firstGrapheme(remaining)
       sequences.push(grapheme)
       pos += grapheme.length
@@ -235,77 +204,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
   private pasteMode: boolean = false
   private pasteBuffer: string = ""
 
-  private kittyBuffer: number[] = []
-  private kittyTimeout: Timer | null = null
-
   constructor(options: StdinBufferOptions = {}) {
     super()
     this.timeoutMs = options.timeout ?? 10
-  }
-
-  private flushKittyBuffer(): string[] {
-    if (this.kittyTimeout) {
-      clearTimeout(this.kittyTimeout)
-      this.kittyTimeout = null
-    }
-    if (this.kittyBuffer.length === 0) return []
-
-    const buffer = this.kittyBuffer
-    this.kittyBuffer = []
-
-    const chunks: string[] = []
-    const CHUNK_SIZE = 8192
-    for (let i = 0; i < buffer.length; i += CHUNK_SIZE) {
-      const slice = buffer.slice(i, i + CHUNK_SIZE)
-      chunks.push(String.fromCodePoint.apply(null, slice))
-    }
-    const text = chunks.join("")
-
-    return [...getGraphemeSegmenter().segment(text)].map((seg) => seg.segment)
-  }
-
-  private emitKittyBuffer(): void {
-    for (const seg of this.flushKittyBuffer()) {
-      this.emit("data", seg)
-    }
-  }
-
-  private processKittyCodepoint(codepoint: number): void {
-    const hasBuffer = this.kittyBuffer.length > 0
-
-    if (hasBuffer) {
-      const lastCp = this.kittyBuffer[this.kittyBuffer.length - 1]!
-      if (isGraphemeExtender(codepoint) || isGraphemeExtender(lastCp)) {
-        this.kittyBuffer.push(codepoint)
-        this.scheduleKittyFlush()
-        return
-      }
-      this.emitKittyBuffer()
-    }
-
-    if (canStartGraphemeCluster(codepoint)) {
-      this.kittyBuffer.push(codepoint)
-      this.scheduleKittyFlush()
-    } else {
-      this.emit("data", String.fromCodePoint(codepoint))
-    }
-  }
-
-  private scheduleKittyFlush(): void {
-    if (this.kittyTimeout) clearTimeout(this.kittyTimeout)
-    this.kittyTimeout = setTimeout(() => this.emitKittyBuffer(), this.timeoutMs)
-  }
-
-  private emitSequences(sequences: string[]): void {
-    for (const seq of sequences) {
-      const cp = extractKittyCodepoint(seq)
-      if (cp !== null) {
-        this.processKittyCodepoint(cp)
-      } else {
-        this.emitKittyBuffer()
-        this.emit("data", seq)
-      }
-    }
   }
 
   private tryCompletePaste(): { completed: boolean; remaining: string } {
@@ -370,9 +271,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
       const startIndex = this.buffer.indexOf(BRACKETED_PASTE_START)
       if (startIndex !== -1) {
         if (startIndex > 0) {
-          this.emitSequences(extractCompleteSequences(this.buffer.slice(0, startIndex)).sequences)
+          const result = extractCompleteSequences(this.buffer.slice(0, startIndex))
+          for (const seq of result.sequences) {
+            this.emit("data", seq)
+          }
         }
-        this.emitKittyBuffer()
 
         this.buffer = this.buffer.slice(startIndex + BRACKETED_PASTE_START.length)
         this.pasteMode = true
@@ -388,7 +291,10 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
       const result = extractCompleteSequences(this.buffer)
       this.buffer = result.remainder
-      this.emitSequences(result.sequences)
+
+      for (const seq of result.sequences) {
+        this.emit("data", seq)
+      }
 
       if (this.buffer.length > 0) {
         this.timeout = setTimeout(() => {
@@ -409,7 +315,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
       this.timeout = null
     }
 
-    const sequences = this.flushKittyBuffer()
+    const sequences: string[] = []
 
     if (this.buffer.length > 0) {
       sequences.push(this.buffer)
@@ -424,14 +330,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
       clearTimeout(this.timeout)
       this.timeout = null
     }
-    if (this.kittyTimeout) {
-      clearTimeout(this.kittyTimeout)
-      this.kittyTimeout = null
-    }
     this.buffer = ""
     this.pasteMode = false
     this.pasteBuffer = ""
-    this.kittyBuffer = []
   }
 
   getBuffer(): string {
