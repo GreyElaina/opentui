@@ -14,7 +14,7 @@ function formatAttrValue(value: unknown): unknown {
   if (value === null || value === undefined) return value
   if (typeof value === "function") return "(function)"
   if (typeof value === "symbol") return value.toString()
-  if (typeof value === "object" && value !== null) {
+  if (typeof value === "object") {
     const ctorName = (value as object).constructor?.name
     if (ctorName && (ctorName.endsWith("Renderable") || ctorName === "RGBA")) {
       return `[${ctorName}]`
@@ -216,7 +216,7 @@ export function setupOpenTUIDevtools(app: App, cliRenderer: CliRenderer): void {
         const renderable = findRenderableById(cliRenderer, payload.nodeId)
         const propName = payload.path[payload.path.length - 1]
         if (renderable && propName && propName in renderable) {
-          ; (renderable as unknown as Record<string, unknown>)[propName] = payload.state.value
+          ;(renderable as unknown as Record<string, unknown>)[propName] = payload.state.value
           refresh()
         }
       })

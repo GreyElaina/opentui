@@ -1,8 +1,26 @@
 let segmenter: Intl.Segmenter | null = null
+let initPromise: Promise<void> | null = null
+let initError: Error | null = null
 
-if (typeof Intl === "undefined" || typeof (Intl as any).Segmenter !== "function") {
-  await import("@formatjs/intl-segmenter/polyfill-force.js").catch(() => {})
+function initializePolyfill(): Promise<void> {
+  if (initPromise) return initPromise
+
+  initPromise = (async () => {
+    if (typeof Intl === "undefined" || typeof (Intl as any).Segmenter !== "function") {
+      try {
+        await import("@formatjs/intl-segmenter/polyfill-force.js")
+      } catch (e) {
+        initError = new Error(
+          "Failed to load Intl.Segmenter polyfill. Please ensure @formatjs/intl-segmenter is installed or use a runtime that supports Intl.Segmenter natively.",
+        )
+      }
+    }
+  })()
+
+  return initPromise
 }
+
+initializePolyfill()
 
 export function getGraphemeSegmenter(): Intl.Segmenter {
   if (segmenter) return segmenter
@@ -12,9 +30,21 @@ export function getGraphemeSegmenter(): Intl.Segmenter {
     return segmenter
   }
 
+  if (initError) {
+    throw initError
+  }
+
   throw new Error(
     "Intl.Segmenter is not available. Please ensure your runtime supports it or install @formatjs/intl-segmenter",
   )
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff
 }
 
 export function isSingleGrapheme(s: string): boolean {
@@ -34,9 +64,19 @@ export function isSingleGrapheme(s: string): boolean {
 
 export function firstGrapheme(str: string): string {
   if (str.length === 0) return ""
+
   const firstCode = str.charCodeAt(0)
   if (firstCode < 128) {
-    if (str.length === 1 || str.charCodeAt(1) < 128) return str[0]!
+    if (str.length === 1) return str[0]!
+    const secondCode = str.charCodeAt(1)
+    if (secondCode < 128) return str[0]!
+  } else if (str.length === 1) {
+    return str[0]!
+  } else if (isHighSurrogate(firstCode)) {
+    const secondCode = str.charCodeAt(1)
+    if (isLowSurrogate(secondCode) && str.length === 2) {
+      return str.substring(0, 2)
+    }
   }
 
   const segments = getGraphemeSegmenter().segment(str)

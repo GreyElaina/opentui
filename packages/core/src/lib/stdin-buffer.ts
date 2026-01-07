@@ -39,7 +39,9 @@ function canStartGraphemeCluster(codepoint: number): boolean {
     (codepoint >= 0x1f1e6 && codepoint <= 0x1f1ff) || // Regional Indicators
     (codepoint >= 0x1f300 && codepoint <= 0x1faff) || // Emoji ranges (simplified)
     codepoint === 0x1f3f4 || // Black Flag
-    (codepoint >= 0x23 && codepoint <= 0x39) || // #, *, 0-9 for keycaps
+    codepoint === 0x23 || // # for keycap
+    codepoint === 0x2a || // * for keycap
+    (codepoint >= 0x30 && codepoint <= 0x39) || // 0-9 for keycaps
     (codepoint >= 0x2600 && codepoint <= 0x27bf) // Misc Symbols & Dingbats
   )
 }
@@ -248,8 +250,16 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
     }
     if (this.kittyBuffer.length === 0) return []
 
-    const text = String.fromCodePoint(...this.kittyBuffer)
+    const buffer = this.kittyBuffer
     this.kittyBuffer = []
+
+    const chunks: string[] = []
+    const CHUNK_SIZE = 8192
+    for (let i = 0; i < buffer.length; i += CHUNK_SIZE) {
+      const slice = buffer.slice(i, i + CHUNK_SIZE)
+      chunks.push(String.fromCodePoint.apply(null, slice))
+    }
+    const text = chunks.join("")
 
     return [...getGraphemeSegmenter().segment(text)].map((seg) => seg.segment)
   }
@@ -298,9 +308,9 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
     }
   }
 
-  private tryCompletePaste(): boolean {
+  private tryCompletePaste(): { completed: boolean; remaining: string } {
     const endIndex = this.pasteBuffer.indexOf(BRACKETED_PASTE_END)
-    if (endIndex === -1) return false
+    if (endIndex === -1) return { completed: false, remaining: "" }
 
     const pastedContent = this.pasteBuffer.slice(0, endIndex)
     const remaining = this.pasteBuffer.slice(endIndex + BRACKETED_PASTE_END.length)
@@ -309,8 +319,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
     this.pasteBuffer = ""
     this.emit("paste", pastedContent)
 
-    if (remaining.length > 0) this.process(remaining)
-    return true
+    return { completed: true, remaining }
   }
 
   public process(data: string | Buffer): void {
@@ -345,37 +354,52 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
     if (this.pasteMode) {
       this.pasteBuffer += this.buffer
       this.buffer = ""
-      this.tryCompletePaste()
-      return
-    }
-
-    const startIndex = this.buffer.indexOf(BRACKETED_PASTE_START)
-    if (startIndex !== -1) {
-      if (startIndex > 0) {
-        this.emitSequences(extractCompleteSequences(this.buffer.slice(0, startIndex)).sequences)
+      const result = this.tryCompletePaste()
+      if (result.remaining.length > 0) {
+        this.buffer = result.remaining
+        return this.processNonPasteBuffer()
       }
-      this.emitKittyBuffer()
-
-      this.buffer = this.buffer.slice(startIndex + BRACKETED_PASTE_START.length)
-      this.pasteMode = true
-      this.pasteBuffer = this.buffer
-      this.buffer = ""
-      this.tryCompletePaste()
       return
     }
 
-    const result = extractCompleteSequences(this.buffer)
-    this.buffer = result.remainder
-    this.emitSequences(result.sequences)
+    this.processNonPasteBuffer()
+  }
 
-    if (this.buffer.length > 0) {
-      this.timeout = setTimeout(() => {
-        const flushed = this.flush()
-
-        for (const sequence of flushed) {
-          this.emit("data", sequence)
+  private processNonPasteBuffer(): void {
+    while (true) {
+      const startIndex = this.buffer.indexOf(BRACKETED_PASTE_START)
+      if (startIndex !== -1) {
+        if (startIndex > 0) {
+          this.emitSequences(extractCompleteSequences(this.buffer.slice(0, startIndex)).sequences)
         }
-      }, this.timeoutMs)
+        this.emitKittyBuffer()
+
+        this.buffer = this.buffer.slice(startIndex + BRACKETED_PASTE_START.length)
+        this.pasteMode = true
+        this.pasteBuffer = this.buffer
+        this.buffer = ""
+        const result = this.tryCompletePaste()
+        if (result.remaining.length > 0) {
+          this.buffer = result.remaining
+          continue
+        }
+        return
+      }
+
+      const result = extractCompleteSequences(this.buffer)
+      this.buffer = result.remainder
+      this.emitSequences(result.sequences)
+
+      if (this.buffer.length > 0) {
+        this.timeout = setTimeout(() => {
+          const flushed = this.flush()
+
+          for (const sequence of flushed) {
+            this.emit("data", sequence)
+          }
+        }, this.timeoutMs)
+      }
+      return
     }
   }
 
